@@ -1,4 +1,5 @@
-# JSON2GoogleGeocoder
+# j2gg
+JSON2GeocodeGeoJSON
 
 ## Convert any json line stream to Google Geocoder and output GeoJSON.
 
