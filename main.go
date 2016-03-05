@@ -15,6 +15,7 @@ import (
 
 	"net/url"
 
+	"github.com/jmoiron/jsonq"
 	"github.com/kpawlik/geojson"
 	"github.com/namsral/flag"
 )
@@ -23,6 +24,8 @@ type (
 	Worker struct {
 		*sync.WaitGroup
 		Keys     []string
+		latQuery []string
+		lngQuery []string
 		Endpoint string
 		Jobs     chan string
 		results  chan map[string]interface{}
@@ -31,27 +34,29 @@ type (
 )
 
 var (
-	keys, geocoder string
+	keys, geocoder, latKey, lngKey string
 )
 
 func init() {
 	flag.StringVar(&keys, "keys", "", "keys for life")
-	// flag.StringVar(&geocoder, "geocoder", "", "geocoder endpoint")
+	flag.StringVar(&geocoder, "geocoder", "", "geocoder endpoint")
+	flag.StringVar(&latKey, "lat", "", "json path for latitude")
+	flag.StringVar(&lngKey, "lng", "", "json path for longitude")
 	flag.Parse()
-
-	geocoder = "http://maps.googleapis.com/maps/api/geocode/json?address="
 }
 
 func main() {
-	if keys == "" || geocoder == "" {
-		fmt.Println("please supply both `keys` and `geocoder`")
+	if keys == "" || geocoder == "" && latKey == "" && lngKey == "" {
+		fmt.Println("please supply `keys`, `geocoder`, `lat` and `lng`")
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	fields := strings.Split(keys, ",")
+	latQuery := strings.Split(latKey, ",")
+	lngQuery := strings.Split(lngKey, ",")
 
-	worker := NewWorker(fields, geocoder)
+	worker := NewWorker(fields, geocoder, latQuery, lngQuery)
 	for i := 0; i < runtime.NumCPU(); i++ {
 		worker.Add(1)
 		go worker.Background()
@@ -65,9 +70,11 @@ func main() {
 	fmt.Println("done!")
 }
 
-func NewWorker(keys []string, geocoder string) *Worker {
+func NewWorker(keys []string, geocoder string, lat, lng []string) *Worker {
 	worker := &Worker{
 		WaitGroup: &sync.WaitGroup{},
+		latQuery:  lat,
+		lngQuery:  lng,
 		Keys:      keys,
 		Endpoint:  geocoder,
 		Jobs:      make(chan string, 100),
@@ -79,7 +86,6 @@ func NewWorker(keys []string, geocoder string) *Worker {
 }
 
 func (w *Worker) Background() {
-	var parsed, geocoded map[string]interface{}
 	client := &http.Client{}
 	for {
 		line, more := <-w.Jobs
@@ -87,6 +93,7 @@ func (w *Worker) Background() {
 			break
 		}
 
+		var parsed, geocoded map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
 			log.Printf("input: %s, err: %v \n", line, err)
 			continue
@@ -128,19 +135,21 @@ func (w *Worker) Background() {
 			continue
 		}
 
-		if geocoded["results"] != nil {
-			if len(geocoded["results"].([]interface{})) > 0 {
-				geom := geocoded["results"].([]interface{})[0].(map[string]interface{})["geometry"]
-				if geom != nil {
-					if geom.(map[string]interface{})["location"] != nil {
-						location := geom.(map[string]interface{})["location"].(map[string]interface{})
-						parsed["_latitude"] = location["lat"]
-						parsed["_longitude"] = location["lng"]
-						w.results <- parsed
-					}
-				}
-			}
+		jq := jsonq.NewQuery(geocoded)
+
+		lat, err := jq.Float(w.latQuery...)
+		if err != nil {
+			continue
 		}
+
+		lng, err := jq.Float(w.lngQuery...)
+		if err != nil {
+			continue
+		}
+
+		parsed["_latitude"] = lat
+		parsed["_longitude"] = lng
+		w.results <- parsed
 	}
 	w.Done()
 }
